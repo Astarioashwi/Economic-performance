@@ -1,0 +1,245 @@
+
+#Install Packages
+
+install.packages("tidyverse")
+install.packages("ipumsr")
+install.packages("R.utils") 
+install.packages("writexl")
+install.packages("readxl")
+install.packages("openxlsx")
+install.packages("janitor")
+install.packages("xlsx")
+install.packages("rJava")
+install.packages("dplyr")
+install.packages("magrittr")
+
+#Load Packages
+
+library(magrittr)
+library(R.utils)
+library(ipumsr)
+library(tidyverse)
+library(dplyr)
+library(purrr)
+library(writexl)
+library(readxl)
+library(openxlsx)
+library(xml2)
+library(rvest)
+library(readr)
+library(janitor)
+library(scales)
+library(rJava)
+library(xlsx)
+library(readxl)
+library(httr)
+
+# ----------------------------------- 1. Extracting Data from IMPUMS -------------------------------------------
+## Group people by ages: Children <= 17; Prime-aged: 25-54; Seniors >=65
+
+#data <- 
+#  define_extract_usa(
+#    "USA extract for API vignette",
+#    c("us2019c"), # 2015-2019 ACS 5-Year
+#    c("STATEFIP","COUNTYFIP","NCHILD","FAMSIZE","EMPSTAT","HHINCOME", "SEX", "SCHOOL",
+#      "NFAMS", "FAMUNIT", "AGE", "RElATE", "ADJUST", "RACHSING", "EDUC", "CITIZEN")
+#  ) %>% 
+#  submit_extract() %>% 
+#  wait_for_extract() %>% 
+#  download_extract() %>% 
+#  read_ipums_micro()
+  
+# Summary of the Data
+# str(data)
+# head(data)
+
+setwd("C:/Users/HP/Desktop/CBPR")
+
+ddi <- read_ipums_ddi("usa_00006.xml")
+data <- read_ipums_micro(ddi)
+
+# Cleaning the Data 
+data_state <- filter(data, STATEFIP == 6) # State - California
+
+data_county <- filter(data_state, COUNTYFIP == 99)  # County - Stanislaus
+  
+data_Income <- filter(data_county, HHINCOME < 9999999) #Income less than 9.99 Million
+
+data_fams1 <-  filter(data_Income, NFAMS == 1) # Number of Families per household = 1 
+
+
+data_filter1 <- filter(data_fams1, NFAMS == 1)  # Number of Families per household = 1
+data_filter2 <- filter(data_filter1, FAMSIZE < 10)  # Having a maximum family size of 9 (4 Adults and 3 Children)
+
+data_filtered1 <- data_filter2
+
+data_filtered2 <- mutate(data_filtered1, ADJUSTED_INCOME = ADJUST * HHINCOME)  # Adjusting Income with the Adjust factor group_by(SERIAL)
+  
+data_filtered3 <-  mutate(data_filtered2, NAdults = sum(AGE > 17 & AGE < 65)) # Number of Adults (Age 18 & above)
+  
+data_filtered4 <-  mutate(data_filtered3, Working_Adults = sum(AGE > 17 & EMPSTAT == 1)) # Number of Adults who have employment status as employed
+  
+data_filtered5 <-  mutate(data_filtered4, NChildren = sum(AGE < 18))
+  
+data_filtered6 <-  mutate(data_filtered5, Infants = sum(AGE <= 2))
+  
+data_filtered7 <-  mutate(data_filtered6, Preschoolers = sum(AGE >= 3 & AGE <= 5))
+  
+data_filtered8 <-  mutate(data_filtered7, Schoolers = sum(AGE >= 6 & AGE <= 12))
+  
+data_filtered9 <-  mutate(data_filtered8, Teenagers = sum(AGE >= 13 & AGE <= 17))
+  
+data_filtered10 <-  mutate(data_filtered9, Student = sum(SCHOOL == 2))
+  
+data_filtered11 <-  mutate(data_filtered10, Seniors = sum(AGE > 64)) # Number of Children (Below the age of 18)
+ 
+
+data_filter3 <- filter(data_filtered11,NAdults > 0 & NAdults < 4)  # Filtering out families who have at least 1 adult and less than 5 adults
+data_filter4 <- filter(data_filter3, NChildren < 7)  #Filtering out households who have more than 3 children
+data_filter5 <- filter(data_filter4, Working_Adults >= 0) # Filtering out households who doesn't have any employed adults
+
+
+  
+#  data_final1 <- data_final2 %>%  
+data_filtered12 <-  mutate(data_filtered11, County = case_when(COUNTYFIP == 99 ~ 'Stanislaus County') ## Changing COUNTYFIP to County Name
+
+data_final1 <- data_final1 %>%  
+  mutate(Education = case_when(EDUCD <= 1 ~ 'N/A', # Changing Education codes to Names
+                               EDUCD > 1 & EDUCD <= 61 ~ 'Without Highschool Diploma',
+                               EDUCD > 61 & EDUCD <= 64 ~ 'With Highschool Diploma',
+                               EDUCD > 64 & EDUCD <= 80 ~ 'Some College',
+                               EDUCD > 80 & EDUCD <= 83 ~ 'Associates Degree',
+                               EDUCD > 83 & EDUCD <= 100 ~ 'Some College',
+                               EDUCD > 100 ~ 'Bachlors Degree or more'))
+
+data_final1 <- data_final1 %>%  
+  mutate(Citizenship = case_when(CITIZEN == 0 ~ 'N/A', ## Changing Citizen codes to Names
+                                 CITIZEN == 1 ~ 'Born Abroad of American Parents',
+                                 CITIZEN == 2 ~ 'Naturalized Citizen',
+                                 CITIZEN == 3 ~ 'Not a Citizen'))
+
+# -------------------------- 2. Self-sufficiency standard for California in 2021 --------------------------------
+url <- 'https://selfsufficiencystandard.org//wp-content/uploads/2021/10/CA2021_AllFamilies.xlsx'
+GET(url, write_disk(tf <- tempfile(fileext = ".xlsx")))
+S_wage <- read_excel(tf, 3L)
+
+# Seeing the structure of the data
+# str(S_wage)
+# head(S_wage)
+
+# Cleaning the data
+S_wage_Temp <- S_wage[-c(1)]
+
+# Transforming all the necessary columns to numeric
+S_wage_Temp <- transform(S_wage_Temp,`Adult(s)` = as.numeric(`Adult(s)`),
+                         `Infant(s)` = as.numeric(`Infant(s)`),
+                         `Preshooler(s)` = as.numeric(`Preshooler(s)`),
+                         `Schoolager(s)` = as.numeric(`Schoolager(s)`),
+                         `Teenager(s)` = as.numeric(`Teenager(s)`))
+                         
+# Converting N/As to 0
+S_wage_Temp[is.na(S_wage_Temp)] = 0
+
+# Gathering necessary data County
+S_wage_Temp5 <- S_wage_Temp %>% 
+  filter(Adult.s. < 4) %>% # Filtering out adults more than 4
+  filter(County == "Stanislaus County") %>%
+  mutate(NChildren = select(., Infant.s.:Teenager.s.) %>% rowSums(na.rm = TRUE)) %>%
+  filter(NChildren <= 6)# Totaling number of children
+
+# Separating counties
+#SW_SC <- S_wage_Temp5 %>% filter(County == "Stanislaus County")
+
+# Adding rows for working adults
+S_wage_SC <- data.frame(S_wage_Temp5[rep(seq_len(dim(S_wage_Temp5)[1]), S_wage_Temp5$Adult.s.,),
+                              , drop = FALSE], row.names=NULL)
+
+# Combining all SW Tables
+SW_All <- S_wage_SC
+
+#----------------------------------------- 3. Join Table ---------------------------------------------------------
+S_wage_Final <- SW_All(select(Adult.s., Infant.s., Preshooler.s., Schoolager.s., Teenager.s.,
+                                  County, Hourly.Self.Sufficiency.Wage, Monthly.Self.Sufficiency.Wage,
+                                  Annual.Self.Sufficiency.Wage, NChildren))
+
+# Joining county data with sufficiency wage table by Number of adults, working adults and Number of children.
+# Filtering it as 1 observation per household who is the head of the household
+Data_Final_Analysis <- left_join(data_filter5, S_wage_Final, 
+                                 by = c("NAdults"="Adult.s.", "Infants" = "Infant.s.", "Preschoolers" = "Preshooler.s.","Schoolers" = "Schoolager.s.", "Teenagers" = "Teenager.s.", "County" = "County", "NChildren" = "NChildren"),
+relationship = "many-to-many")
+
+Data_Final <- Data_Final_Analysis %>% filter(RELATE == 1)
+
+# ---------------------------------------- 4. ANALYSIS -----------------------------------------------------------
+# Total Families
+total_families <- nrow(Data_Final)
+
+# Calculate the percentage of struggling families 
+percent_struggling <- sum(Data_Final$ADJUSTED_INCOME < Data_Final$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(percent_struggling)
+
+# Calculate the percentage of non-struggling families 
+percent_non <- sum(Data_Final$ADJUSTED_INCOME >= Data_Final$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(percent_non)
+
+# Non-working Families 
+nw_families <- Data_Final %>%
+  filter( Working_Adults == 0)
+
+# Calculate the percentage of struggling non-working families 
+nw_percent_struggling <- sum(nw_families$ADJUSTED_INCOME < nw_families$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(nw_percent_struggling)
+
+# Calculate the percentage of non-struggling non-working families
+nw_percent_non <- sum(nw_families$ADJUSTED_INCOME >= nw_families$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(nw_percent_non)
+
+# Working Families 
+w_families <- Data_Final %>%
+  filter( Working_Adults > 0)
+
+# Calculate the percentage of struggling families 
+w_percent_struggling <- sum(w_families$ADJUSTED_INCOME < w_families$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(w_percent_struggling)
+
+# Calculate the percentage of non-struggling families
+w_percent_non <- sum(w_families$ADJUSTED_INCOME >= w_families$Annual.Self.Sufficiency.Wage) / total_families * 100
+print(w_percent_non)
+
+#--------------------------------------------- 5. Output ----------------------------------------------------
+# Create a data frame to store the results
+results <- data.frame(
+   Family_Type = c("All struggling families", 
+                 "All non-struggling families",
+                 "Struggling working families", 
+                 "Struggling non-working families",
+                 "Non-struggling working families", 
+                 "Non-struggling non-working families"),
+
+   Percent = c(percent_struggling, 
+               percent_non,
+               w_percent_struggling, 
+               nw_percent_struggling,
+               w_percent_non, 
+               nw_percent_non)
+
+  )
+
+# Print the results
+print(results)
+       
+require(openxlsx)
+output_path <- "C:/Ashwin/" # Use your own path
+output_file <- file.path(output_path, "Struggling Working and Non-working Families_RSUpdated.xlsx") # Create your file first
+list_of_datasets <- list("Results" = results)
+openxlsx::write.xlsx(list_of_datasets, file = output_file)
+
+# Print the results
+print(data_filtered11)
+       
+require(openxlsx)
+output_path <- "C:/Users/HP/Desktop/CBPR" # Use your own path
+output_file <- file.path(output_path, "data_filtered11.xlsx") # Create your file first
+list_of_datasets <- list("data_filtered11" = data_filtered11)
+openxlsx::write.xlsx(list_of_datasets, file = output_file)
+
